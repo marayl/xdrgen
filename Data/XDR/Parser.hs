@@ -69,8 +69,11 @@ commaSep1 = T.commaSep1 l
 identifier :: (Monad m) => Parser m String
 identifier = T.identifier l
 
-integer :: (Monad m) => Parser m Integer
-integer = T.integer l
+-- | Use natural instead of integer, because signedness is already handled by
+-- const expresssions.
+
+natural :: (Monad m) => Parser m Integer
+natural = T.natural l
 
 reserved, reservedOp :: (Monad m) => String -> Parser m ()
 reserved = T.reserved l
@@ -149,7 +152,7 @@ initContext defines = Context (M.fromList . map (second ConstLit) $ defines) 0
 type Parser = ParsecT ByteString Context
 
 constPrim :: (Monad m) => Parser m ConstExpr
-constPrim = (ConstLit <$> integer)
+constPrim = (ConstLit <$> natural)
             <|> (ConstLit <$> boolean)
             <|> (findReference =<< identifier)
 

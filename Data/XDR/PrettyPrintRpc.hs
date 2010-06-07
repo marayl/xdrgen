@@ -5,7 +5,6 @@ module Data.XDR.PrettyPrintRpc
     , ppRpcImpl
     ) where
 
-import Control.Monad
 import Data.Char
 import Data.List
 import Data.Map (Map)
@@ -15,59 +14,32 @@ import Data.XDR.AST
 import Data.XDR.PPKeywords
 import Data.XDR.PPUtils
 import System.Path hiding ((</>))
-import Text.PrettyPrint.Leijen as PP hiding (semiBraces, braces, indent)
+import Text.PrettyPrint.Leijen as PP hiding (braces, indent)
 
 indent :: Int
 indent = 4
 
-braces :: [Doc] -> Doc
-braces ds =
-    nest indent (lbrace <$> vcat ds) <$> rbrace
+braces :: Doc -> Doc
+braces d = nest indent (lbrace <$> d) <$> rbrace
 
-semiBraces :: [Doc] -> Doc
-semiBraces =
-    braces . map (<> semi)
+switchBraces :: Doc -> Doc
+switchBraces = enclose (lbrace <> line) (line <> rbrace)
 
-switchBraces :: [Doc] -> Doc
-switchBraces =
-    f . map (<> semi)
-  where
-    f ds = lbrace <$> vcat ds <$> rbrace
+moduleToString :: ModuleName -> String -> String
+moduleToString (ModuleName xs) sep =
+    concat . intersperse sep $ xs
 
-moduleToString :: Module -> String -> String
-moduleToString (Module elements) sep =
-    concat . intersperse sep $ elements
-
-fileGuard :: Module -> Doc
+fileGuard :: ModuleName -> Doc
 fileGuard mod = text ("XDR_" ++ map toUpper (moduleToString mod "_") ++ "_H")
-
-getTypedefs :: [Definition] -> [Typedef]
-getTypedefs =
-    foldr f []
-  where
-    f (DefTypedef td) tds = td : tds
-    f _ tds = tds
-
-liftMaybeToList :: (a -> b) -> Maybe a -> [b]
-liftMaybeToList f =
-    maybeToList . liftM f
-
-maybeEmpty :: Maybe Doc -> Doc
-maybeEmpty =
-    fromMaybe empty
-
-maybeSemiBraces :: [Maybe Doc] -> Doc
-maybeSemiBraces =
-    semiBraces . catMaybes
 
 -- XDR
 ppDefaultConstant :: Doc -> Maybe ConstExpr -> Doc
 ppDefaultConstant d =
     maybe d ppConstExpr
 
-ppSizeOf :: Type -> Doc
+ppSizeOf :: TypeSpec -> Doc
 ppSizeOf t =
-    kSizeof <> parens (ppType t)
+    kSizeof <> parens (ppTypeSpec t)
 
 ppIfDecode :: Doc
 ppIfDecode =
@@ -79,11 +51,11 @@ ppIfFalse d =
 
 ppReturn :: String -> Doc
 ppReturn =
-    (kReturn <+>) . text
+    (<> semi) . (kReturn <+>) . text
 
 ppGoto :: (Show a) => a -> Doc
 ppGoto n =
-    kGoto <+> text ("xfree" ++ show n)
+    kGoto <+> text ("xfree" ++ show n) <> semi
 
 ppIfFalseReturn :: Doc -> Doc
 ppIfFalseReturn d =
@@ -96,19 +68,29 @@ ppIfFalseGoto n d =
 ppUnwind :: (Show a) => a -> Doc -> Doc
 ppUnwind n d =
     text ("xfree" ++ show n) <> colon
-             <$> nest indent (ppIfDecode <$> d)
+             <$> nest indent (ppIfDecode <$> d) <> semi
 
-ppFuncParam :: String -> TypedefInternal -> Doc
-ppFuncParam n (DefSimple (DeclArray t c)) =
+ppXFreeInit :: Doc
+ppXFreeInit =
+    text "XDR" <+> text "xfree" <> semi
+             <$> text "xfree.x_op" <+> equals <+> text "XDR_FREE" <> semi
+
+ppFuncSig :: TypeDecl -> Doc
+ppFuncSig (SimpleDecl n s) =
+    text "bool_t" <$> text ("xdr_" ++ n) <> ppFuncParam n s
+ppFuncSig d =
+    text "bool_t" <$> text ("xdr_" ++ n)
+             <> tupled [text "XDR *xdrs", text (n ++ " *objp")]
+  where
+    n = declName d
+
+ppFuncParam :: String -> SimpleSpec -> Doc
+ppFuncParam n (ArraySpec _ _) =
     tupled [text "XDR *xdrs", text (n ++ " objp")]
-ppFuncParam n (DefSimple (DeclOpaque c)) =
+ppFuncParam n (OpaqueSpec _) =
     tupled [text "XDR *xdrs", text (n ++ " objp")]
 ppFuncParam n _ =
     tupled [text "XDR *xdrs", text (n ++ " *objp")]
-
-ppFuncSig :: String -> TypedefInternal -> Doc
-ppFuncSig n ti =
-    text "bool_t" <$> text ("xdr_" ++ n) <> ppFuncParam n ti
 
 ppCallEnum :: String -> String -> Doc
 ppCallEnum xdrs ptr =
@@ -116,44 +98,36 @@ ppCallEnum xdrs ptr =
              <> tupled [text xdrs,
                         text ("(enum_t *)" ++ ptr)]
 
-ppCallType :: String -> String -> Type -> Doc
-ppCallType xdrs ptr TBool =
+ppCallTypeSpec :: String -> String -> TypeSpec -> Doc
+ppCallTypeSpec xdrs ptr BoolSpec =
     text "xdr_bool"
              <> tupled [text xdrs,
                         text ptr]
-ppCallType xdrs ptr THyper =
+ppCallTypeSpec xdrs ptr HyperSpec =
     text "xdr_hyper"
              <> tupled [text xdrs,
                         text ptr]
-ppCallType xdrs ptr TUHyper =
+ppCallTypeSpec xdrs ptr UHyperSpec =
     text "xdr_u_hyper"
              <> tupled [text xdrs,
                         text ptr]
 
-ppCallType xdrs ptr (TEnum _) =
-    ppCallEnum xdrs ptr
-
-ppCallType xdrs ptr (TStruct _) =
-    undefined
-
-ppCallType xdrs ptr (TUnion _) =
-    undefined
-
-ppCallType xdrs ptr t =
-    text "xdr_" <> ppType t
+ppCallTypeSpec xdrs ptr t =
+    text "xdr_" <> ppTypeSpec t
              <> tupled [text xdrs,
                         text ptr]
 
-ppCallVector :: String -> String -> ConstExpr -> Type -> Doc
+ppCallVector :: String -> String -> ConstExpr -> TypeSpec -> Doc
 ppCallVector xdrs ptr c t =
     text "xdr_vector"
              <> tupled [text xdrs,
                         text ("(char *)" ++ ptr),
                         ppConstExpr c,
                         ppSizeOf t,
-                        text "(xdrproc_t)xdr_" <> ppType t]
+                        text "(xdrproc_t)xdr_" <> ppTypeSpec t]
 
-ppCallArray :: String -> String -> String -> Maybe ConstExpr -> Type -> Doc
+ppCallArray :: String -> String -> String -> Maybe ConstExpr -> TypeSpec
+            -> Doc
 ppCallArray xdrs ptr len mc t =
     text "xdr_array"
              <> tupled [text xdrs,
@@ -161,7 +135,7 @@ ppCallArray xdrs ptr len mc t =
                         text ("(u_int *)" ++ len),
                         ppDefaultConstant (text "~0") mc,
                         ppSizeOf t,
-                        text "(xdrproc_t)xdr_" <> ppType t]
+                        text "(xdrproc_t)xdr_" <> ppTypeSpec t]
 
 ppCallOpaque :: String -> String -> ConstExpr -> Doc
 ppCallOpaque xdrs ptr c =
@@ -185,254 +159,277 @@ ppCallString xdrs ptr mc =
                         text ptr,
                         ppDefaultConstant (text "~0") mc]
 
-ppCallPointer :: String -> String -> Type -> Doc
+ppCallPointer :: String -> String -> TypeSpec -> Doc
 ppCallPointer xdrs ptr t =
     text "xdr_pointer"
              <> tupled [text xdrs,
                         text ("(char **)" ++ ptr),
                         ppSizeOf t,
-                        text "(xdrproc_t)xdr_" <> ppType t]
+                        text "(xdrproc_t)xdr_" <> ppTypeSpec t]
 
-ppEnumBody :: [ConstantDef] -> Doc
-ppEnumBody =
-    braces . punctuate comma . map f
-  where
-    f (ConstantDef n c) = text n <+> text "=" <+> ppConstExpr c
+ppTypeSpec :: TypeSpec -> Doc
+ppTypeSpec IntSpec = kInt
+ppTypeSpec UIntSpec = text "u_int"
+ppTypeSpec HyperSpec = text "quad_t"
+ppTypeSpec UHyperSpec = text "u_quad_t"
+ppTypeSpec FloatSpec = kFloat
+ppTypeSpec DoubleSpec = kDouble
+ppTypeSpec QuadrupleSpec = error "quadruple not supported"
+ppTypeSpec BoolSpec = text "bool_t"
+ppTypeSpec (NamedSpec n) = text n
 
-ppStructBody :: [Decl] -> Doc
-ppStructBody =
-    maybeSemiBraces . map ppMaybeDecl
-
-ppMaybeDecl :: Decl -> Maybe Doc
-ppMaybeDecl (Decl n (DeclSimple t)) =
-    Just $ ppType t <+> text n
-ppMaybeDecl (Decl n (DeclArray t c)) =
-    Just $ ppType t <+> text n <> (brackets . ppConstExpr $ c)
-ppMaybeDecl (Decl n (DeclVarArray t mc)) =
-    Just $ ppVarStruct n t
-ppMaybeDecl (Decl n (DeclOpaque c)) =
-    Just $ kChar <+> text n <> (brackets . ppConstExpr $ c)
-ppMaybeDecl (Decl n (DeclVarOpaque mc)) =
-    Just $ ppVarStruct n (TTypedef "char")
-ppMaybeDecl (Decl n (DeclString mc)) =
-    Just $ kChar <+> char '*' <> text n
-ppMaybeDecl (Decl n (DeclPointer t)) =
-    Just $ ppType t <+> char '*' <+> text n
-ppMaybeDecl DeclVoid =
-    Nothing
-
-ppVarStruct :: String -> Type -> Doc
-ppVarStruct n t =
-    kStruct <+> semiBraces [text "u_int" <+> text "len",
-                            ppType t <+> text "*val"]
-                <+> text n
-
-ppType :: Type -> Doc
-ppType TInt = kInt
-ppType TUInt = text "u_int"
-ppType THyper = text "quad_t"
-ppType TUHyper = text "u_quad_t"
-ppType TFloat = kFloat
-ppType TDouble = kDouble
-ppType TQuadruple = error "not supported"
-ppType TBool = text "bool_t"
-ppType (TEnum (EnumDetail ed)) = text "enum" <+> ppEnumBody ed
-ppType (TStruct sd) = error "unexpected struct"
-ppType (TUnion ud) = error "unexpected union"
-ppType (TTypedef n) = text n
-
-ppIncludes :: [Module] -> Doc
+ppIncludes :: [ModuleName] -> Doc
 ppIncludes =
     vcat . map ppInclude
 
-ppInclude :: Module -> Doc
+ppInclude :: ModuleName -> Doc
 ppInclude mod =
     text "#include" <+> text f
   where
     f = "\"" ++ moduleToString mod "/" ++ ".h\""
 
 -- | Pretty print a C header for use with the sun rpc library.
-ppRpcHeader :: Specification -> String
+ppRpcHeader :: ModuleSpec -> String
 ppRpcHeader spec =
     show $ header <$> ppSpec spec <$> ppFuncs spec <$> footer
   where
     header = vcat [text "#ifndef" <+> compileGuard,
                    text "#define" <+> compileGuard,
                    text "#include <rpc/xdr.h>",
-                   ppIncludes . M.keys $ imports spec]
+                   ppIncludes . M.keys $ moduleImports spec]
     footer = text "#endif /*" <+> compileGuard <+> text "*/"
     compileGuard = fileGuard $ moduleName spec
 
-    ppSpec (Specification _ _ defs) =
-        f defs
+    ppSpec :: ModuleSpec -> Doc
+    ppSpec (ModuleSpec _ _ ds) =
+        f ds
       where
         f = vcat . punctuate linebreak . map ppDef
 
-    ppDef (DefConstant cd) = ppConstantDef cd
-    ppDef (DefTypedef td) = ppTypedef td <> semi
+    ppDef :: Definition -> Doc
+    ppDef (TypeDef td) =
+        kTypedef <+> ppTypeDecl td <> semi
+    ppDef (ConstDef cd) =
+        ppConstDecl cd
 
-    ppConstantDef (ConstantDef n c) =
+    ppTypeDecl :: TypeDecl -> Doc
+    ppTypeDecl (EnumDecl n s) =
+        kEnum <+> ppEnumSpec s <+> text n
+    ppTypeDecl (StructDecl n s) =
+        kStruct <+> ppStructSpec s <+> text n
+    ppTypeDecl (UnionDecl n s) =
+        kStruct <+> ppUnionSpec s <+> text n
+    ppTypeDecl (SimpleDecl n s) =
+        ppSimpleSpec n s
+
+    ppConstDecl :: ConstDecl -> Doc
+    ppConstDecl (ConstDecl n c) =
         text "#define" <+> text n <+> ppConstExpr c
 
-    ppTypedef (Typedef n ti) =
-        kTypedef <+> ppTypedefInternal n ti
+    ppEnumSpec :: EnumSpec -> Doc
+    ppEnumSpec (EnumSpec cs) =
+        braces . vcat . punctuate comma . map ppEnumConstDecl $ cs
 
-    ppTypedefInternal n (DefSimple (DeclSimple (TStruct sd))) =
-        ppStructDetail n sd
-    ppTypedefInternal n (DefSimple (DeclSimple (TUnion ud))) =
-        ppUnionDetail n ud
-    ppTypedefInternal n (DefSimple di) =
-        maybeEmpty $ ppMaybeDecl (Decl n di)
-    ppTypedefInternal n (DefEnum (EnumDetail ed)) =
-        kEnum <+> text n <+> ppEnumBody ed <+> text n
-    ppTypedefInternal n (DefStruct sd) =
-        ppStructDetail n sd
-    ppTypedefInternal n (DefUnion ud) =
-        ppUnionDetail n ud
+    ppEnumConstDecl :: ConstDecl -> Doc
+    ppEnumConstDecl (ConstDecl n c) =
+        text n <+> text "=" <+> ppConstExpr c
 
-    ppStructDetail n (StructDetail decls) =
-        sn <+> text n <> semi <$> sn <+> ppStructBody decls
+    ppStructSpec :: StructSpec -> Doc
+    ppStructSpec (StructSpec ds) =
+        braces . vcat . punctuate semi . map ppTypeDecl $ ds
+
+    ppUnionSpec :: UnionSpec -> Doc
+    ppUnionSpec (UnionSpec (UnionDis n t) cs md) =
+        braces body
       where
-        sn = kStruct <+> text n
+        body = ppTypeSpec t <+> text n <> semi
+               <$> kUnion <+> (braces . vcat $ (catMaybes xs ++ ys))
+                       <+> text "u" <> semi
+        xs = map (ppUnionArm . snd) cs
+        ys = maybeToList . ppUnionDflt $ md
 
-    ppUnionDetail n (UnionDetail selector cases mDefault) =
-        sn <+> text n <> semi <$> sn <+> body
-      where
-        sn = kStruct <+> text n
-        body = maybeSemiBraces [ppMaybeDecl selector,
-                                Just $ kUnion <+> ubody <+> text "u"]
-        ubody = maybeSemiBraces $ foldr ((:) . ppMaybeDecl . snd) [def] cases
-        def = ppMaybeDecl =<< mDefault
+    ppUnionDflt :: Maybe UnionArm -> Maybe Doc
+    ppUnionDflt ma =
+        ma >>= ppUnionArm
 
-    ppFuncs (Specification _ _ defs) =
-        vcat . map f $ getTypedefs defs
+    ppUnionArm :: UnionArm -> Maybe Doc
+    ppUnionArm (DeclArm d) =
+        Just . (<> semi) . ppTypeDecl $ d
+    ppUnionArm VoidArm =
+        Nothing
+
+    ppSimpleSpec :: String -> SimpleSpec -> Doc
+    ppSimpleSpec n (PlainSpec t) =
+        ppTypeSpec t <+> text n
+    ppSimpleSpec n (ArraySpec t c) =
+        ppTypeSpec t <+> text n <> (brackets . ppConstExpr $ c)
+    ppSimpleSpec n (VarArraySpec t _) =
+        ppVarStruct n (ppTypeSpec t)
+    ppSimpleSpec n (OpaqueSpec c) =
+        kChar <+> text n <> (brackets . ppConstExpr $ c)
+    ppSimpleSpec n (VarOpaqueSpec _) =
+        ppVarStruct n (text "char")
+    ppSimpleSpec n (StringSpec _) =
+        kChar <+> char '*' <> text n
+    ppSimpleSpec n (PointerSpec t) =
+        ppTypeSpec t <+> char '*' <+> text n
+
+    ppVarStruct :: String -> Doc -> Doc
+    ppVarStruct n td =
+        kStruct <+> braces (text "u_int" <+> text "len" <> semi
+                            <$> td <+> text "*val" <> semi)
+                    <+> text n
+
+    ppFuncs (ModuleSpec _ _ ds) =
+        vcat . map f $ typeDecls ds
       where
-        f (Typedef n ti) = ppFuncSig n ti <> semi
+        f = (<> semi) . ppFuncSig
 
 -- | Pretty print a C implementation for use with the sun rpc library.
-ppRpcImpl :: Specification -> String
+ppRpcImpl :: ModuleSpec -> String
 ppRpcImpl spec = show $ ppInclude (moduleName spec) <$> ppSpec spec
   where
-    ppSpec (Specification _ _ defs) =
-        f defs
+    ppSpec (ModuleSpec _ _ ds) =
+        f ds
       where
-        f = vcat . punctuate linebreak . map ppTypedef . getTypedefs
+        f = vcat . punctuate linebreak . map ppTypeDecl . typeDecls
 
-    ppTypedef (Typedef n ti) =
-        ppFuncSig n ti <$> semiBraces (ppFuncBody n ti)
+    ppTypeDecl :: TypeDecl -> Doc
+    ppTypeDecl d = ppFuncSig d <$> ppFuncBody d
 
-    ppFuncBody _ (DefSimple (DeclSimple (TStruct sd))) =
-        ppStructDetail sd
-    ppFuncBody _ (DefSimple (DeclSimple (TUnion ud))) =
-        ppUnionDetail ud
-    ppFuncBody n (DefSimple di) =
-        f (Decl n di) ++ [ppReturn "TRUE"]
+    ppFuncBody :: TypeDecl -> Doc
+    ppFuncBody (EnumDecl n s) =
+        braces . ppEnumSpec $ s
+    ppFuncBody (StructDecl n s) =
+        braces . ppStructSpec $ s
+    ppFuncBody (UnionDecl n s) =
+        braces . ppUnionSpec $ s
+    ppFuncBody (SimpleDecl n s) =
+        braces (f s <$> ppReturn "TRUE")
       where
-        f = liftMaybeToList ppIfFalseReturn . ppSimpleCall "xdrs"
-    ppFuncBody n (DefEnum ed) =
-        [ppIfFalseReturn $ ppCallEnum "xdrs" "objp",
-         ppReturn "TRUE"]
-    ppFuncBody _ (DefStruct sd) = ppStructDetail sd
-    ppFuncBody _ (DefUnion ud) = ppUnionDetail ud
+        f = ppIfFalseReturn . ppSimpleSpec "xdrs"
 
-    ppSimpleCall xdrs (Decl _ (DeclSimple t)) =
-        Just $ ppCallType xdrs "objp" t
-    ppSimpleCall xdrs (Decl _ (DeclArray t c)) =
-        Just $ ppCallVector xdrs "objp" c t
-    ppSimpleCall xdrs (Decl _ (DeclVarArray t mc)) =
-        Just $ ppCallArray xdrs "&objp->val" "&objp->len" mc t
-    ppSimpleCall xdrs (Decl _ (DeclOpaque c)) =
-        Just $ ppCallOpaque xdrs "objp" c
-    ppSimpleCall xdrs (Decl _ (DeclVarOpaque mc)) =
-        Just $ ppCallBytes xdrs "&objp->val" "&objp->len" mc
-    ppSimpleCall xdrs (Decl _ (DeclString mc)) =
-        Just $ ppCallString xdrs "objp" mc
-    ppSimpleCall xdrs (Decl _ (DeclPointer t)) =
-        Just $ ppCallPointer xdrs "objp" t
-    ppSimpleCall _ DeclVoid =
-        Nothing
+    ppEnumSpec :: EnumSpec -> Doc
+    ppEnumSpec (EnumSpec cs) =
+        (ppIfFalseReturn . ppCallEnum "xdrs" $ "objp")
+        <$> ppReturn "TRUE"
 
-    ppStructDetail (StructDetail [decl@(Decl _ _)]) =
-        f decl ++ [ppReturn "TRUE"]
+    ppStructSpec :: StructSpec -> Doc
+    ppStructSpec (StructSpec [d]) =
+        f d <$> ppReturn "TRUE"
       where
-        f = liftMaybeToList ppIfFalseReturn . ppStructCall "xdrs"
+        f = ppIfFalseReturn . ppStructCall "xdrs"
 
-    ppStructDetail (StructDetail decls) =
-        text "XDR xfree" :
-        text "xfree.x_op = XDR_FREE" :
-        zipWith ppIfFalseGoto [0..] allocs
-        ++ [ppReturn "TRUE"]
-        ++ map (uncurry ppUnwind) (drop 1 . reverse $ zip [1..] frees)
-        ++ [text "xfree0:" <$> ppReturn "FALSE"]
+    ppStructSpec (StructSpec ds) =
+        ppXFreeInit
+        <$> (vcat . zipWith ppIfFalseGoto [0..] $ allocs)
+                <$> ppReturn "TRUE"
+                <$> (vcat . map (uncurry ppUnwind)
+                              $ drop 1 . reverse . zip [1..] $ frees)
+                <$> text "xfree0:"
+                <$> ppReturn "FALSE"
       where
-        allocs = mapMaybe (ppStructCall "xdrs") decls
-        frees = mapMaybe (ppStructCall "&xfree") decls
+        allocs = map (ppStructCall "xdrs") ds
+        frees = map (ppStructCall "&xfree") ds
 
-    ppStructCall xdrs (Decl n (DeclSimple t)) =
-        Just $ ppCallType xdrs ("&objp->" ++ n) t
-    ppStructCall xdrs (Decl n (DeclArray t c)) =
-        Just $ ppCallVector xdrs ("&objp->" ++ n) c t
-    ppStructCall xdrs (Decl n (DeclVarArray t mc)) =
-        Just $ ppCallArray xdrs ("&objp->" ++ n ++ ".val")
-                 ("&objp->" ++ n ++ ".len") mc t
-    ppStructCall xdrs (Decl n (DeclOpaque c)) =
-        Just $ ppCallOpaque xdrs ("objp->" ++ n) c
-    ppStructCall xdrs (Decl n (DeclVarOpaque mc)) =
-        Just $ ppCallBytes xdrs ("&objp->" ++ n ++ ".val")
-                 ("&objp->" ++ n ++ ".len") mc
-    ppStructCall xdrs (Decl n (DeclString mc)) =
-        Just $ ppCallString xdrs ("&objp->" ++ n) mc
-    ppStructCall xdrs (Decl n (DeclPointer t)) =
-        Just $ ppCallPointer xdrs ("&objp->" ++ n) t
-    ppStructCall _ DeclVoid =
-        Nothing
+    ppUnionSpec :: UnionSpec -> Doc
+    ppUnionSpec (UnionSpec (UnionDis n t) cs md) =
+        ppXFreeInit
+        <$> (ppIfFalseGoto 0 . ppCallTypeSpec "xdrs" ("&objp->" ++ n) $ t)
+                <$> ppSwitch n cs md
+                <$> ppReturn "TRUE"
+                <$> (ppUnwind 1 $ ppCallTypeSpec "&xfree" ("&objp->" ++ n)
+                                  $ t)
+                <$> text "xfree0:"
+                <$> ppReturn "FALSE"
 
-    ppUnionDetail (UnionDetail selector@(Decl n _) cases mDefault) =
-        [text "XDR xfree",
-         text "xfree.x_op = XDR_FREE",
-         ppIfFalseGoto 0 $ maybeEmpty $ ppStructCall "xdrs" selector,
-         ppSwitch n cases mDefault <$> ppReturn "TRUE",
-         ppUnwind 1 $ maybeEmpty $ ppStructCall "&xfree" selector,
-         text "xfree0:" <$> ppReturn "FALSE"]
-
-    ppSwitch n cases mDefault =
-        kSwitch <+> (parens . text) ("objp->" ++ n) <+> switchBraces ds
+    ppSwitch n cs md =
+        kSwitch <+> (parens . text) ("objp->" ++ n) <+> body
       where
-        ds = foldr ((:) . nest indent . ppSwitchCase) def cases
-        def = liftMaybeToList (nest indent . ppSwitchDefault) mDefault
+        body = switchBraces . vcat . map (nest indent) $ (xs ++ ys)
+        xs = map ppUnionCase cs
+        ys = maybeToList . ppUnionDflt $ md
 
-    ppSwitchCase (c, d) =
-        enclose l r $ ppSwitchCall d
+    ppUnionCase :: (ConstExpr, UnionArm) -> Doc
+    ppUnionCase (c, d) =
+        enclose l r . ppUnionArm $ d
       where
-        l = kCase <+> ppConstExpr c <> colon
-        r = line <> kBreak
+        l = kCase <+> ppConstExpr c <> colon <> line
+        r = line <> kBreak <> semi
 
-    ppSwitchDefault =
-        enclose l r . ppSwitchCall
+    ppUnionDflt :: Maybe UnionArm -> Maybe Doc
+    ppUnionDflt ma =
+        (enclose l r . ppUnionArm) `fmap` ma
       where
         l = kDefault <> char ':'
-        r = line <> kBreak
+        r = line <> kBreak <> semi
 
-    ppSwitchCall =
-        maybe empty f . ppUnionCall "xdrs"
-      where
-        f = enclose line semi . ppIfFalseGoto 1
+    ppUnionArm :: UnionArm -> Doc
+    ppUnionArm (DeclArm d) =
+        ppIfFalseGoto 1 . ppUnionCall "xdrs" $ d
+    ppUnionArm VoidArm =
+        empty
 
-    ppUnionCall xdrs (Decl n (DeclSimple t)) =
-        Just $ ppCallType xdrs ("&objp->u." ++ n) t
-    ppUnionCall xdrs (Decl n (DeclArray t c)) =
-        Just $ ppCallVector xdrs ("&objp->u." ++ n) c t
-    ppUnionCall xdrs (Decl n (DeclVarArray t mc)) =
-        Just $ ppCallArray xdrs ("&objp->u." ++ n ++ ".val")
+    ppSimpleSpec :: String -> SimpleSpec -> Doc
+    ppSimpleSpec xdrs (PlainSpec t) =
+        ppCallTypeSpec xdrs "objp" t
+    ppSimpleSpec xdrs (ArraySpec t c) =
+        ppCallVector xdrs "objp" c t
+    ppSimpleSpec xdrs (VarArraySpec t mc) =
+        ppCallArray xdrs "&objp->val" "&objp->len" mc t
+    ppSimpleSpec xdrs (OpaqueSpec c) =
+        ppCallOpaque xdrs "objp" c
+    ppSimpleSpec xdrs (VarOpaqueSpec mc) =
+        ppCallBytes xdrs "&objp->val" "&objp->len" mc
+    ppSimpleSpec xdrs (StringSpec mc) =
+        ppCallString xdrs "objp" mc
+    ppSimpleSpec xdrs (PointerSpec t) =
+        ppCallPointer xdrs "objp" t
+
+    ppStructCall :: String -> TypeDecl -> Doc
+    ppStructCall xdrs (EnumDecl _ _) =
+        error "enum not supported"
+    ppStructCall xdrs (StructDecl _ _) =
+        error "struct not supported"
+    ppStructCall xdrs (UnionDecl _ _) =
+        error "union not supported"
+    ppStructCall xdrs (SimpleDecl n (PlainSpec t)) =
+        ppCallTypeSpec xdrs ("&objp->" ++ n) t
+    ppStructCall xdrs (SimpleDecl n (ArraySpec t c)) =
+        ppCallVector xdrs ("&objp->" ++ n) c t
+    ppStructCall xdrs (SimpleDecl n (VarArraySpec t mc)) =
+        ppCallArray xdrs ("&objp->" ++ n ++ ".val")
+                        ("&objp->" ++ n ++ ".len") mc t
+    ppStructCall xdrs (SimpleDecl n (OpaqueSpec c)) =
+        ppCallOpaque xdrs ("objp->" ++ n) c
+    ppStructCall xdrs (SimpleDecl n (VarOpaqueSpec mc)) =
+        ppCallBytes xdrs ("&objp->" ++ n ++ ".val")
+                 ("&objp->" ++ n ++ ".len") mc
+    ppStructCall xdrs (SimpleDecl n (StringSpec mc)) =
+        ppCallString xdrs ("&objp->" ++ n) mc
+    ppStructCall xdrs (SimpleDecl n (PointerSpec t)) =
+        ppCallPointer xdrs ("&objp->" ++ n) t
+
+    ppUnionCall :: String -> TypeDecl -> Doc
+    ppUnionCall xdrs (EnumDecl _ _) =
+        error "enum not supported"
+    ppUnionCall xdrs (StructDecl _ _) =
+        error "struct not supported"
+    ppUnionCall xdrs (UnionDecl _ _) =
+        error "union not supported"
+    ppUnionCall xdrs (SimpleDecl n (PlainSpec t)) =
+        ppCallTypeSpec xdrs ("&objp->u." ++ n) t
+    ppUnionCall xdrs (SimpleDecl n (ArraySpec t c)) =
+        ppCallVector xdrs ("&objp->u." ++ n) c t
+    ppUnionCall xdrs (SimpleDecl n (VarArraySpec t mc)) =
+        ppCallArray xdrs ("&objp->u." ++ n ++ ".val")
                  ("&objp->u." ++ n ++ ".len") mc t
-    ppUnionCall xdrs (Decl n (DeclOpaque c)) =
-        Just $ ppCallOpaque xdrs ("objp->u." ++ n) c
-    ppUnionCall xdrs (Decl n (DeclVarOpaque mc)) =
-        Just $ ppCallBytes xdrs ("&objp->u." ++ n ++ ".val")
-                 ("&objp->u." ++ n ++ ".len") mc
-    ppUnionCall xdrs (Decl n (DeclString mc)) =
-        Just $ ppCallString xdrs ("&objp->u." ++ n) mc
-    ppUnionCall xdrs (Decl n (DeclPointer t)) =
-        Just $ ppCallPointer xdrs ("&objp->u." ++ n) t
-    ppUnionCall _ DeclVoid =
-        Nothing
+    ppUnionCall xdrs (SimpleDecl n (OpaqueSpec c)) =
+        ppCallOpaque xdrs ("objp->u." ++ n) c
+    ppUnionCall xdrs (SimpleDecl n (VarOpaqueSpec mc)) =
+        ppCallBytes xdrs ("&objp->u." ++ n ++ ".val")
+                        ("&objp->u." ++ n ++ ".len") mc
+    ppUnionCall xdrs (SimpleDecl n (StringSpec mc)) =
+        ppCallString xdrs ("&objp->u." ++ n) mc
+    ppUnionCall xdrs (SimpleDecl n (PointerSpec t)) =
+        ppCallPointer xdrs ("&objp->u." ++ n) t

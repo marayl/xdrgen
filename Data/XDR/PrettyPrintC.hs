@@ -37,7 +37,7 @@ block = foldr ((<$>) . text) empty
 
 -- | Generate a standalone C header for marshalling the types in the
 --   XDR specification.
-ppCHeader :: Specification -> String
+ppCHeader :: ModuleSpec -> String
 ppCHeader spec = show $ header <--> ppSpec spec <--> ppFuncs spec <--> footer
     where
       header = vcat [ text "#ifndef" <+> compileGuard
@@ -49,71 +49,98 @@ ppCHeader spec = show $ header <--> ppSpec spec <--> ppFuncs spec <--> footer
       --compileGuard = text "XDR_" <> (md5 . show . typeCode $ spec) <> text "_H"
       compileGuard = text "XDR_" <> text "blahblahblah" <> text "_H"
 
-      ppSpec (Specification _ _ defs) = vcat . punctuate linebreak . map ppDef $ defs
+      ppSpec :: ModuleSpec -> Doc
+      ppSpec (ModuleSpec _ _ ds) =
+          vcat . punctuate linebreak . map ppDef $ ds
 
-      ppDef (DefConstant cd) = ppConstantDef cd
-      ppDef (DefTypedef td) = ppTypedef td
+      ppDef :: Definition -> Doc
+      ppDef (TypeDef td) = text "typedef" <+> ppTypeDecl td <> semi
+      ppDef (ConstDef cd) = ppConstDecl cd
 
-      ppConstantDef (ConstantDef n c) = text "#define" <+> text n <+> ppConstExpr c
+      ppTypeDecl :: TypeDecl -> Doc
+      ppTypeDecl (EnumDecl n s) = text "enum" <+> ppEnumSpec s <+> text n
+      ppTypeDecl (StructDecl n s) = text "struct" <+> ppStructSpec s <+> text n
+      ppTypeDecl (UnionDecl n s) = text "struct" <+> ppUnionSpec s <+> text n
+      ppTypeDecl (SimpleDecl n s) = ppSimpleSpec n s
 
-      ppTypedef (Typedef n ti) = text "typedef" <+> ppTypedefInternal n ti <> semi
+      ppConstDecl :: ConstDecl -> Doc
+      ppConstDecl (ConstDecl n c) =
+          text "#define" <+> text n <+> ppConstExpr c
 
-      ppTypedefInternal n (DefSimple di) = ppDecl (Decl n di)
-      ppTypedefInternal n (DefEnum ed) = text "enum" <+> ppEnumDetail ed <+> text n
-      ppTypedefInternal n (DefStruct sd) = text "struct" <+> ppStructDetail sd <+> text n
-      ppTypedefInternal n (DefUnion ud) = text "struct" <+> ppUnionDetail ud <+> text n
+      ppEnumSpec :: EnumSpec -> Doc
+      ppEnumSpec (EnumSpec cs) =
+          braces . punctuate comma . map ppEnumConstDecl $ cs
 
-      ppEnumDetail (EnumDetail xs) = braces . punctuate comma . map ppEnumDef $ xs
-      ppEnumDef (ConstantDef n c) = text n <+> text "=" <+> ppConstExpr c
+      ppEnumConstDecl :: ConstDecl -> Doc
+      ppEnumConstDecl (ConstDecl n c) =
+          text n <+> text "=" <+> ppConstExpr c
 
-      ppStructDetail (StructDetail decls) = semiBraces . map ppDecl $ decls
+      ppStructSpec :: StructSpec -> Doc
+      ppStructSpec (StructSpec ds) =
+          semiBraces . map ppTypeDecl $ ds
 
-      ppUnionDetail (UnionDetail selector cases mDefault) =
-          semiBraces [ ppDecl selector
+      ppUnionSpec :: UnionSpec -> Doc
+      ppUnionSpec (UnionSpec (UnionDis n t) cs md) =
+          semiBraces [ ppTypeSpec t <+> text n
                      , text "union" <+>
-                       semiBraces
-                        (map (ppDecl . snd) cases ++ [ppOptional ppDecl mDefault]) <+> text "u"
-                 ]
+                       semiBraces (catMaybes xs ++ ys)
+                       <+> text "u"
+                     ]
+        where
+          xs = map (ppUnionArm . snd) cs
+          ys = maybeToList . ppUnionDflt $ md
 
-      ppDecl (Decl n (DeclSimple t)) = ppType t <+> text n
-      ppDecl (Decl n (DeclArray t c)) = ppType t <+> text n <> (brackets . ppConstExpr $ c)
-      ppDecl (Decl n (DeclVarArray t mc)) = ppVarStruct n t
-      ppDecl (Decl n (DeclOpaque c)) = text "opaque" <+> text n <> (brackets . ppConstExpr $ c)
-      ppDecl (Decl n (DeclVarOpaque mc)) = ppVarStruct n (TTypedef "void")
-      ppDecl (Decl n (DeclString mc)) = text "char *" <> text n
-      ppDecl (Decl n (DeclPointer t)) = ppType t <> text "*" <+> text n
-      ppDecl DeclVoid = text "void"
+      ppUnionDflt :: Maybe UnionArm -> Maybe Doc
+      ppUnionDflt ma =
+          ma >>= ppUnionArm
+
+      ppUnionArm :: UnionArm -> Maybe Doc
+      ppUnionArm (DeclArm d) =
+          Just . ppTypeDecl $ d
+      ppUnionArm VoidArm =
+          Nothing
+
+      ppSimpleSpec :: String -> SimpleSpec -> Doc
+      ppSimpleSpec n (PlainSpec t) =
+          ppTypeSpec t <+> text n
+      ppSimpleSpec n (ArraySpec t c) =
+          ppTypeSpec t <+> text n <> (brackets . ppConstExpr $ c)
+      ppSimpleSpec n (VarArraySpec t mc) =
+          ppVarStruct n t
+      ppSimpleSpec n (OpaqueSpec c) =
+          text "opaque" <+> text n <> (brackets . ppConstExpr $ c)
+      ppSimpleSpec n (VarOpaqueSpec mc) =
+          ppVarStruct n (NamedSpec "void")
+      ppSimpleSpec n (StringSpec mc) =
+          text "char *" <> text n
+      ppSimpleSpec n (PointerSpec t) =
+          ppTypeSpec t <> text "*" <+> text n
 
       ppVarStruct n t = text "struct" <+> semiBraces [ text "uint32_t len"
-                                                     , ppType t <+> text "*elts"
+                                                     , ppTypeSpec t <+> text "*elts"
                                                      ] <+> text n
+      ppTypeSpec :: TypeSpec -> Doc
+      ppTypeSpec IntSpec = text "int32_t"
+      ppTypeSpec UIntSpec = text "uint32_t"
+      ppTypeSpec HyperSpec = text "int64_t"
+      ppTypeSpec UHyperSpec = text "uint64_t"
+      ppTypeSpec FloatSpec = text "float"
+      ppTypeSpec DoubleSpec = text "double"
+      ppTypeSpec QuadrupleSpec = text "long double"
+      ppTypeSpec BoolSpec = text "int32_t"
+      ppTypeSpec (NamedSpec n) = text n
 
-      ppType TInt = text "int32_t"
-      ppType TUInt = text "uint32_t"
-      ppType THyper = text "int64_t"
-      ppType TUHyper = text "uint64_t"
-      ppType TFloat = text "float"
-      ppType TDouble = text "double"
-      ppType TQuadruple = text "long double"
-      ppType TBool = text "int32_t"
-      ppType (TEnum ed) = text "enum" <+> ppEnumDetail ed
-      ppType (TStruct sd) = text "struct" <+> ppStructDetail sd
-      ppType (TUnion ud) = text "struct" <+> ppUnionDetail ud
-      ppType (TTypedef n) = text n
-
-      ppFuncs (Specification _ _ defs) = thunkCode <$>
-                                       (vcat . map declareFuncs . mapMaybe getTypedef $ defs)
-
-      getTypedef (DefTypedef (Typedef n _)) = Just n
-      getTypedef _ = Nothing
-
+      ppFuncs (ModuleSpec _ _ ds) = thunkCode <$>
+                                    (vcat . map declareFuncs $ ns)
+        where
+          ns = map declName . typeDecls $ ds
       declareFuncs n = text ("int XDR_pack_" ++ n ++ "(struct packer *p, " ++ n ++
                              " *x, void **data, size_t *len, struct xdr_thunk *release);") <$>
                        text (n ++ " *XDR_unpack_" ++ n ++ "(struct unpacker *u, struct xdr_thunk *release);")
 
 -- | Generate a standalone C implementation for marshalling the types in the
 --   XDR specification.
-ppCImpl :: Specification -> String
+ppCImpl :: ModuleSpec -> String
 ppCImpl spec = show $ foldr (<-->) empty [cIncludes, poolCode, packerCode, unpackerCode, basicTypeMarshalling]
 
 (<-->) :: Doc -> Doc -> Doc

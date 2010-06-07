@@ -21,6 +21,7 @@ import Data.XDR.PrettyPrinter
 import Data.XDR.PrettyPrintC
 import Data.XDR.PrettyPrintJava
 import Data.XDR.PrettyPrintRpc
+import Data.XDR.PrettyTemplate
 
 ----------------------------------------------------------------
 
@@ -45,10 +46,14 @@ parseOpts args = case getOpt Permute options args of
 
 ----------------------------------------------------------------
 
-type Formatter = Specification -> String
+type Formatter = ModuleSpec -> String
+
+ppAST :: ModuleSpec -> String
+ppAST = show
 
 formatters :: Map String Formatter
-formatters = M.fromList [ ("c-header",   ppCHeader)
+formatters = M.fromList [ ("ast",        ppAST)
+                        , ("c-header",   ppCHeader)
                         , ("c-impl",     ppCImpl)
                         , ("java",       ppJava)
                         , ("rpc-header", ppRpcHeader)
@@ -56,14 +61,14 @@ formatters = M.fromList [ ("c-header",   ppCHeader)
                         , ("xdr",        ppXDR)
                         ]
 
-processFile :: [Flag] -> AbsDir -> AbsFile -> IO (Either [ParseError] Specification)
+processFile :: [Flag] -> AbsDir -> AbsFile -> IO (Either [ParseError] ModuleSpec)
 processFile flags cwd file = parseFile options file
     where
       options = [ Imports [mkAbsPath cwd i | Include i <- flags]
                 , Defines []
                 ]
 
-runFormatter :: Formatter -> Either [ParseError] Specification -> IO ()
+runFormatter :: Formatter -> Either [ParseError] ModuleSpec -> IO ()
 runFormatter _ (Left errs)  = die (unlines . map show $ errs)
 runFormatter f (Right spec) = putStrLn . f $ spec
 

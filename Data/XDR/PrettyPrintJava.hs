@@ -45,203 +45,212 @@ typeName :: String -> String
 typeName [] = []
 typeName (x:xs) = toUpper x : camelCase xs
 
-topName :: Module -> String
-topName (Module elems) =
-    last elems
+topName :: ModuleName -> String
+topName (ModuleName xs) =
+    last xs
 
 upperName :: String -> String
 upperName = map toUpper
 
--- | DeclPair is Decl without DeclVoid.
+type DeclMap = Map String TypeDecl
 
-data DeclPair = DeclPair
-    { declName :: String
-    , declInternal :: DeclInternal
-    }
+lookupDecl :: String -> DeclMap -> TypeDecl
+lookupDecl n m =
+    case M.lookup n m of
+      Just d -> d
+      Nothing -> error ("unknown type: " ++ n)
 
-declToPair :: Decl -> Maybe DeclPair
-declToPair (Decl n di) = Just $ DeclPair n di
-declToPair DeclVoid = Nothing
-
-declsToPairs :: [Decl] -> [DeclPair] -> [DeclPair]
-declsToPairs =
-    flip (foldr f)
-  where
-    f (Decl n di) = (DeclPair n di :)
-    f _ = id
-
-defsToPairs :: [Definition] -> [DeclPair] -> [DeclPair]
-defsToPairs =
-    flip (foldr f)
-  where
-    f (DefTypedef (Typedef k v)) =
-        (DeclPair k (typedefToDecl v) :)
-    f _ = id
-
-type DeclMap = Map String DeclPair
-
-specToDeclMap :: Specification -> DeclMap -> DeclMap
-specToDeclMap (Specification _ imports defs) m =
+specToDeclMap :: ModuleSpec -> DeclMap -> DeclMap
+specToDeclMap (ModuleSpec _ imports defs) m =
     defsToDeclMap defs m'
   where
     m' = foldr specToDeclMap m (M.elems imports)
+
+armToDecl :: UnionArm -> Maybe TypeDecl
+armToDecl (DeclArm d) = Just d
+armToDecl VoidArm = Nothing
 
 defsToDeclMap :: [Definition] -> DeclMap -> DeclMap
 defsToDeclMap =
     flip (foldr f)
   where
-    f (DefTypedef (Typedef k v)) =
-        M.insert k $ DeclPair k (typedefToDecl v)
+    f (TypeDef td) =
+        M.insert (declName td) td
     f _ = id
-
-typedefToDecl :: TypedefInternal -> DeclInternal
-typedefToDecl (DefSimple di) = di
-typedefToDecl (DefEnum ed) = DeclSimple (TEnum ed)
-typedefToDecl (DefStruct sd) = DeclSimple (TStruct sd)
-typedefToDecl (DefUnion ud) = DeclSimple (TUnion ud)
 
 -- JType
 
 data JType = JType
     { jType :: Doc
     , jUnbox :: Doc
+    , jCodec :: Doc
     , jConstExpr :: ConstExpr -> Doc
     }
 
-lookupPair :: DeclMap -> DeclPair -> JType
-lookupPair m (DeclPair n (DeclSimple t)) =
-    lookupType m n t
-
-lookupPair m (DeclPair n (DeclArray t _)) =
-    JType td td ppConstExpr
-  where
-    td = text "Array" <> langle <> jType jt <> rangle
-    jt = lookupType m n t
-
-lookupPair m (DeclPair n (DeclVarArray t mc)) =
-    JType td td ppConstExpr
-  where
-    td = text "Array" <> langle <> jType jt <> rangle
-    jt = lookupType m n t
-
-lookupPair m (DeclPair n (DeclOpaque c)) =
-    JType td td ppConstExpr
-  where
-    td = text "Opaque"
-
-lookupPair m (DeclPair n (DeclVarOpaque mc)) =
-    JType td td ppConstExpr
-  where
-    td = text "Opaque"
-
-lookupPair m (DeclPair n (DeclString mc)) =
-    JType td td ppConstExpr
-  where
-    td = text "String"
-
-lookupPair m (DeclPair n (DeclPointer t)) =
-    lookupType m n t
-
-lookupType :: DeclMap -> String -> Type -> JType
-
-lookupType _ _ TInt = JType (text "Integer") kInt ppConstExpr
-lookupType _ _ TUInt = JType (text "Integer") kInt ppConstExpr
-lookupType _ _ THyper = JType (text "Long") kLong ppConstExpr
-lookupType _ _ TUHyper = JType (text "Long") kLong ppConstExpr
-lookupType _ _ TFloat = JType (text "Float") kFloat ppConstExpr
-lookupType _ _ TDouble = JType (text "Double") kDouble ppConstExpr
-lookupType _ _ TQuadruple = error "not supported"
-lookupType _ _ TBool =
-    JType (text "Boolean") kBoolean f
-  where
-    f = (text "0 !=" <+>) . ppConstExpr
-lookupType _ _ (TEnum _) = JType (text "Integer") kInt ppConstExpr
-lookupType _ n (TStruct _) =
-    JType td td ppConstExpr
+jTypeDecl :: TypeDecl -> DeclMap -> JType
+jTypeDecl (EnumDecl n s) m =
+    jTypeSpec IntSpec m
+jTypeDecl d@(StructDecl n _) m =
+    JType td td cd ppConstExpr
   where
     td = text $ typeName n
+    cd = ppTypeDeclCodec d
+jTypeDecl d@(UnionDecl n (UnionSpec (UnionDis _ t) _ _)) m =
+    JType td td cd ppConstExpr
+ where
+    td = text "Union" <> langle <> (jType . jTypeSpec t $ m) <> rangle
+    cd = ppTypeDeclCodec d
+jTypeDecl (SimpleDecl n s) m =
+    jSimpleSpec s m
 
-lookupType m n (TUnion (UnionDetail sel _ _)) =
-    JType td td ppConstExpr
+jSimpleSpec :: SimpleSpec -> DeclMap -> JType
+jSimpleSpec (PlainSpec t) m =
+    jTypeSpec t m
+jSimpleSpec s@(ArraySpec t _) m =
+    JType td td cd ppConstExpr
   where
-    td = text "Union" <> langle <> maybe (text "Integer") jType jt <> rangle
-    jt = lookupPair m `fmap` declToPair sel
-
-lookupType m _ (TTypedef n) =
-    JType td ud cp
+    td = text "Array" <> langle <> jType jt <> rangle
+    cd = ppSimpleSpecCodec s
+    jt = jTypeSpec t m
+jSimpleSpec s@(VarArraySpec t _) m =
+    JType td td cd ppConstExpr
   where
-    td = maybe td' jType jt
-    ud = maybe td' jUnbox jt
-    cp = maybe ppConstExpr jConstExpr jt
-    td' = text $ typeName n
-    jt = lookupPair m `fmap` M.lookup n m
-
-kByteBuffer = text "java.nio.ByteBuffer"
-kCharacterCodingException = text "java.nio.charset.CharacterCodingException"
-
-ppCodecPair :: DeclMap -> DeclPair -> Doc
-ppCodecPair m (DeclPair n (DeclSimple t)) =
-    ppCodecType m n t
-ppCodecPair m (DeclPair n (DeclArray t c)) =
-    text "XdrArray.newCodec"
-             <> tupled [ppCodecType m n t, ppConstExpr c]
-ppCodecPair m (DeclPair n (DeclVarArray t mc)) =
-    text "XdrArray.newVarCodec"
-             <> tupled [ppCodecType m n t,
-                        maybe (text "Integer.MAX_VALUE") ppConstExpr mc]
-ppCodecPair m (DeclPair n (DeclOpaque c)) =
-    text "XdrOpaque.newCodec" <> tupled [ppConstExpr c]
-ppCodecPair m (DeclPair n (DeclVarOpaque mc)) =
-    text "XdrOpaque." <> maybe (text "VAR_CODEC") ppVarCodec mc
-ppCodecPair m (DeclPair n (DeclString mc)) =
-    text "XdrString." <> maybe (text "VAR_CODEC") ppVarCodec mc
-ppCodecPair m (DeclPair n (DeclPointer t)) =
-    text "XdrOptional.newCodec" <> tupled [ppCodecType m n t]
-
-ppCodecType :: DeclMap -> String -> Type -> Doc
-ppCodecType _ _ TInt = text "XdrInt.CODEC"
-ppCodecType _ _ TUInt = text "XdrUInt.CODEC"
-ppCodecType _ _ THyper = text "XdrHyper.CODEC"
-ppCodecType _ _ TUHyper = text "XdrUHyper.CODEC"
-ppCodecType _ _ TFloat = text "XdrFloat.CODEC"
-ppCodecType _ _ TDouble = text "XdrDouble.CODEC"
-ppCodecType _ _ TQuadruple = error "not supported"
-ppCodecType _ _ TBool = text "XdrBool.CODEC"
-ppCodecType _ _ (TEnum _) = text "XdrInt.CODEC"
-ppCodecType _ n (TStruct _) = text ("Xdr" ++ typeName n ++ ".CODEC")
-ppCodecType m _ (TUnion (UnionDetail sel _ mDef)) =
-    text "XdrUnion.newCodec"
-             <> tupled ((fromMaybe (text "XdrInt.CODEC") sd)
-                        : text "CASES" : maybeToList dd)
+    td = text "Array" <> langle <> jType jt <> rangle
+    cd = ppSimpleSpecCodec s
+    jt = jTypeSpec t m
+jSimpleSpec s@(OpaqueSpec _) _ =
+    JType td td cd ppConstExpr
   where
-    sd = ppCodecPair m `fmap` declToPair sel
-    dd = ppCodecPair m `fmap` dp
-    dp = declToPair =<< mDef
+    td = text "Opaque"
+    cd = ppSimpleSpecCodec s
+jSimpleSpec s@(VarOpaqueSpec _) m =
+    JType td td cd ppConstExpr
+  where
+    td = text "Opaque"
+    cd = ppSimpleSpecCodec s
+jSimpleSpec s@(StringSpec _) m =
+    JType td td cd ppConstExpr
+  where
+    td = text "String"
+    cd = ppSimpleSpecCodec s
+jSimpleSpec s@(PointerSpec t) m =
+    JType td td cd fn
+  where
+    JType td _ _ fn = jTypeSpec t m
+    cd = ppSimpleSpecCodec s
 
-ppCodecType _ _ (TTypedef n) =
+jTypeSpec :: TypeSpec -> DeclMap -> JType
+jTypeSpec IntSpec _ =
+    JType (text "Integer") kInt cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec IntSpec
+jTypeSpec UIntSpec _ =
+    JType (text "Integer") kInt cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec UIntSpec
+jTypeSpec HyperSpec _ =
+    JType (text "Long") kLong cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec HyperSpec
+jTypeSpec UHyperSpec _ =
+    JType (text "Long") kLong cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec UHyperSpec
+jTypeSpec FloatSpec _ =
+    JType (text "Float") kFloat cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec FloatSpec
+jTypeSpec DoubleSpec _ =
+    JType (text "Double") kDouble cd ppConstExpr
+  where
+    cd = ppTypeSpecCodec DoubleSpec
+jTypeSpec QuadrupleSpec _ =
+    error "quadruple not supported"
+jTypeSpec BoolSpec _ =
+    JType (text "Boolean") kBoolean cd f
+  where
+    cd = ppTypeSpecCodec BoolSpec
+    f = (text "0 !=" <+>) . ppConstExpr
+-- | Resolve name from decl map.
+jTypeSpec (NamedSpec n) m =
+    JType td ud cd fn
+  where
+    JType td ud _ fn = flip jTypeDecl m . lookupDecl n $ m
+    cd = text ("Xdr" ++ typeName n ++ ".CODEC")
+
+ppTypeDeclCodec :: TypeDecl -> Doc
+-- | Enumerations map to native integers.
+ppTypeDeclCodec (EnumDecl _ _) =
+    ppTypeSpecCodec IntSpec
+ppTypeDeclCodec (StructDecl n _) =
     text ("Xdr" ++ typeName n ++ ".CODEC")
+ppTypeDeclCodec (UnionDecl _ (UnionSpec (UnionDis _ t) _ md)) =
+    text "XdrUnion.newCodec"
+             <> tupled (dis : text "CASES" : maybeToList dfl)
+  where
+    dis = ppTypeSpecCodec t
+    dfl = md >>= ppUnionArmCodec
+
+ppTypeDeclCodec (SimpleDecl _ s) =
+    ppSimpleSpecCodec s
+
+ppUnionArmCodec :: UnionArm -> Maybe Doc
+ppUnionArmCodec a = ppTypeDeclCodec `fmap` armToDecl a
+
+ppSimpleSpecCodec :: SimpleSpec -> Doc
+ppSimpleSpecCodec (PlainSpec t) =
+    ppTypeSpecCodec t
+ppSimpleSpecCodec (ArraySpec t c) =
+    text "XdrArray.newCodec"
+             <> tupled [ppTypeSpecCodec t, ppConstExpr c]
+ppSimpleSpecCodec (VarArraySpec t mc) =
+    text "XdrArray.newVarCodec"
+             <> tupled [ppTypeSpecCodec t,
+                        maybe (text "Integer.MAX_VALUE") ppConstExpr mc]
+ppSimpleSpecCodec (OpaqueSpec c) =
+    text "XdrOpaque.newCodec" <> tupled [ppConstExpr c]
+ppSimpleSpecCodec (VarOpaqueSpec mc) =
+    text "XdrOpaque." <> maybe (text "VAR_CODEC") ppVarCodec mc
+ppSimpleSpecCodec (StringSpec mc) =
+    text "XdrString." <> maybe (text "VAR_CODEC") ppVarCodec mc
+ppSimpleSpecCodec (PointerSpec t) =
+    text "XdrOptional.newCodec" <> tupled [ppTypeSpecCodec t]
 
 ppVarCodec :: ConstExpr -> Doc
 ppVarCodec c =
     text "newVarCodec" <> tupled [ppConstExpr c]
 
--- Java
+ppTypeSpecCodec :: TypeSpec -> Doc
+ppTypeSpecCodec IntSpec = text "XdrInt.CODEC"
+ppTypeSpecCodec UIntSpec = text "XdrUInt.CODEC"
+ppTypeSpecCodec HyperSpec = text "XdrHyper.CODEC"
+ppTypeSpecCodec UHyperSpec = text "XdrUHyper.CODEC"
+ppTypeSpecCodec FloatSpec = text "XdrFloat.CODEC"
+ppTypeSpecCodec DoubleSpec = text "XdrDouble.CODEC"
+ppTypeSpecCodec QuadrupleSpec = error "not supported"
+ppTypeSpecCodec BoolSpec = text "XdrBool.CODEC"
+ppTypeSpecCodec (NamedSpec n) = text ("Xdr" ++ typeName n ++ ".CODEC")
 
-ppMaybePackage :: Module -> Maybe Doc
-ppMaybePackage (Module elems) =
+-- Type-names and keywords.
+
+kByteBuffer = text "java.nio.ByteBuffer"
+kCharacterCodingException = text "java.nio.charset.CharacterCodingException"
+
+ppMaybePackage :: ModuleName -> Maybe Doc
+ppMaybePackage (ModuleName xs) =
     if null ps then Nothing
     else Just $ kPackage <+> f ps <> semi
   where
     f = text . concat . intersperse "."
-    ps = init elems
+    ps = init xs
 
-ppImports :: [Module] -> Doc
+ppImports :: [ModuleName] -> Doc
 ppImports =
     (kImport <+> text "org.openxdr.*" <> semi <$>) . vcat . map ppImport
 
-ppImport :: Module -> Doc
-ppImport m@(Module elems) =
-    kImport <+> kStatic <+> f elems <> text ".*" <> semi
+ppImport :: ModuleName -> Doc
+ppImport m@(ModuleName xs) =
+    kImport <+> kStatic <+> f xs <> text ".*" <> semi
   where
     f = text . concat . intersperse "."
 
@@ -254,30 +263,6 @@ ppClass n =
 ppPrivateCons :: String -> Doc
 ppPrivateCons n =
     kPrivate <+> text n <> lrparen <+> lbrace <$> rbrace
-
-ppConstantDef n d =
-    kPublic <+> kStatic <+> kFinal <+> kInt <+> text n'
-                <+> equals <+> nest indent d <> semi
-  where
-    n' = upperName n
-
-ppSimpleCodec :: DeclMap -> DeclPair -> Doc
-ppSimpleCodec m p@(DeclPair n d) =
-    kPublic <+> kStatic <+> kFinal
-                <+> ppClass ("Xdr" ++ typeName n) [ppPublicCodec td cd]
-  where
-    td = jType $ lookupPair m p
-    cd = ppCodecPair m p
-
-ppPublicCodec :: Doc -> Doc -> Doc
-ppPublicCodec t =
-    (kPublic <+>) . ppStaticCodec "CODEC" t
-
-ppPrivateCodec :: String -> Doc -> Doc -> Doc
-ppPrivateCodec n t =
-    (kPrivate <+>) . ppStaticCodec un t
-  where
-    un = upperName n ++ "_CODEC"
 
 ppStaticCodec :: String -> Doc -> Doc -> Doc
 ppStaticCodec n t d =
@@ -440,90 +425,117 @@ ppSizeVar (n, jt) =
     tn = typeName n
     un = upperName n
 
-ppCodecDecls :: DeclMap -> [DeclPair] -> [Doc]
-ppCodecDecls m =
-    map (ppCodecDecl m)
-
-ppCodecDecl :: DeclMap -> DeclPair -> Doc
-ppCodecDecl m p@(DeclPair n d) =
-    ppPrivateCodec n td (ppCodecPair m p)
-  where
-    td = jType $ lookupPair m p
-
-ppJava :: Specification -> String
+ppJava :: ModuleSpec -> String
 ppJava spec =
     show . vcat $ maybePush (ppMaybePackage m)
-             [ppImports . M.keys $ imports spec, body]
+             [ppImports . M.keys $ moduleImports spec, body]
   where
     body = kPublic <+> kFinal <+> ppClass tn (ppSpec spec)
     tn = topName m
     m = moduleName spec
 
-    ppSpec (Specification _ _ defs) =
-        f defs
-      where
-        f = punctuate linebreak . map (ppDef m)
-        m = specToDeclMap spec $ M.empty
+ppSpec :: ModuleSpec -> [Doc]
+ppSpec s@(ModuleSpec _ _ ds) =
+    f ds
+  where
+    f = punctuate linebreak . map (flip ppDef m)
+    m = specToDeclMap s M.empty
 
-    ppDef m (DefConstant (ConstantDef n c)) =
-        ppConstantDef n $ ppConstExpr c
-    ppDef m (DefTypedef (Typedef n ti)) =
-        ppDecl m n $ typedefToDecl ti
+ppDef :: Definition -> DeclMap -> Doc
+ppDef (TypeDef td) m =
+    ppTypeDecl td m
+ppDef (ConstDef cd) m =
+    ppConstDecl cd
 
-    ppDecl m n d@(DeclSimple (TEnum ed)) =
-        ppEnumDetail n ed
-            <$> (ppSimpleCodec m (DeclPair n d))
-    ppDecl m n d@(DeclSimple (TStruct sd)) =
-        ppStructDetail m n sd
-    ppDecl m n d@(DeclSimple (TUnion ud)) =
-        kPublic <+> kStatic <+> kFinal
-                    <+> ppClass ("Xdr" ++ typeName n)
-                            [ppUnionCases m ud, ppPublicCodec td cd]
-      where
-        td = jType $ lookupPair m dp
-        cd = ppCodecPair m dp
-        dp = DeclPair n d
+ppTypeDecl :: TypeDecl -> DeclMap -> Doc
 
-    ppDecl m n d =
-        ppSimpleCodec m $ DeclPair n d
+-- | Enumerated values must be visible in the top-level namespace, so they are
+-- not enclosed in a separate class or interface.
+ppTypeDecl d@(EnumDecl n (EnumSpec cs)) m =
+    (vcat . map ppConstDecl $ cs) <$> (ppSimpleCodec d m)
 
-    -- | Enumerated values must be visible in the top-level namespace, so they
-    -- are not enclosed in a separate class or interface.
+ppTypeDecl (StructDecl n (StructSpec ds)) m =
+    kPublic <+> ppIface tn jts
+                <$> kPublic <+> ppFactory tn jts
+                <$> kPublic <+> kStatic <+> kFinal
+                <+> ppClass ("Xdr" ++ tn) (anc : cds)
+    where
+      anc = ppAnonCodec n jts
+      cds = map (flip ppPrivateCodec m) ds
+      jts = map (pair (declName, flip jTypeDecl m)) ds
+      tn = typeName n
 
-    ppEnumDetail n (EnumDetail pairs) =
-        vcat $ map f pairs
-      where
-        f (ConstantDef n c) = ppConstantDef n $ ppConstExpr c
+ppTypeDecl d@(UnionDecl n s) m =
+    kPublic <+> kStatic <+> kFinal
+                <+> ppClass ("Xdr" ++ typeName n)
+                        [ppUnionCases s m, ppPublicCodec d m]
 
-    ppStructDetail m n (StructDetail decls) =
-        kPublic <+> ppIface tn jts
-                    <$> kPublic <+> ppFactory tn jts
-                    <$> kPublic <+> kStatic <+> kFinal
-                    <+> ppClass ("Xdr" ++ tn) (anc : ppCodecDecls m dps)
-      where
-        anc = ppAnonCodec n jts
-        jts = map (pair (declName, lookupPair m)) dps
-        dps = declsToPairs decls []
-        tn = typeName n
+ppTypeDecl d@(SimpleDecl _ _) m =
+    ppSimpleCodec d m
 
-    ppUnionCases m (UnionDetail sel cases mDef) =
-        nest indent head <> semi
-      where
-        head = kPrivate <+> kStatic <+> kFinal <+> text "java.util.Map"
-               <> langle <> (maybe (text "Integer") jType jt) <> char ','
-               <+> text "Codec" <> langle <> char '?' <> rangle <> rangle
-               <+> text "CASES" <+> equals </> text "XdrUnion.newCases"
-               <> tupled (ppUnionPairs m
-                          (maybe ppConstExpr jConstExpr jt) cases)
-        jt = lookupPair m `fmap` sp
-        sp = declToPair sel
+ppConstDecl :: ConstDecl -> Doc
+ppConstDecl (ConstDecl n c) =
+    kPublic <+> kStatic <+> kFinal <+> kInt <+> text n'
+                <+> equals <+> nest indent (ppConstExpr c) <> semi
+  where
+    n' = upperName n
 
-    ppUnionPairs m f =
-        foldr (g . ppUnionPair m f) []
-      where
-        g (c, d) = (c :) . (d :)
+ppUnionCases :: UnionSpec -> DeclMap -> Doc
+ppUnionCases (UnionSpec (UnionDis n t) cs md) m =
+    nest indent head <> semi
+  where
+    head = kPrivate <+> kStatic <+> kFinal <+> text "java.util.Map"
+           <> langle <> jType jt <> char ','
+           <+> text "Codec" <> langle <> char '?' <> rangle <> rangle
+           <+> text "CASES" <+> equals </> text "XdrUnion.newCases"
+           <> tupled (ppUnionPairs m (jConstExpr jt) cs)
+    jt = jTypeSpec t m
 
-    ppUnionPair m f (c, d) =
-        (f c, fromMaybe (text "XdrVoid.CODEC") cd)
-      where
-        cd = (ppCodecPair m) `fmap` declToPair d
+ppUnionPairs :: DeclMap -> (ConstExpr -> Doc) -> [(ConstExpr, UnionArm)]
+             -> [Doc]
+ppUnionPairs m f =
+    foldr (g . ppUnionPair m f) []
+  where
+    g (c, d) = (c :) . (d :)
+
+ppUnionPair :: DeclMap -> (ConstExpr -> Doc) -> (ConstExpr, UnionArm)
+            -> (Doc, Doc)
+ppUnionPair m f (c, d) =
+    (f c, ppUnionArm d)
+
+ppUnionCase :: (ConstExpr, UnionArm) -> Doc
+ppUnionCase (c, d) =
+    undefined
+
+ppUnionDflt :: Maybe UnionArm -> Doc
+ppUnionDflt d =
+    undefined
+
+ppUnionArm :: UnionArm -> Doc
+ppUnionArm (DeclArm d) =
+    ppTypeDeclCodec d
+ppUnionArm VoidArm =
+    text "XdrVoid.CODEC"
+
+ppSimpleCodec :: TypeDecl -> DeclMap -> Doc
+ppSimpleCodec d m =
+    kPublic <+> kStatic <+> kFinal
+                <+> ppClass ("Xdr" ++ (typeName . declName $ d))
+                        [ppPublicCodec d m]
+
+ppPublicCodec :: TypeDecl -> DeclMap -> Doc
+ppPublicCodec d m =
+    (kPublic <+>) . ppStaticCodec "CODEC" td $ cd
+  where
+    td = jType jt
+    cd = jCodec jt
+    jt = jTypeDecl d m
+
+ppPrivateCodec :: TypeDecl -> DeclMap -> Doc
+ppPrivateCodec d m =
+    (kPrivate <+>) . ppStaticCodec (upperName n ++ "_CODEC") td $ cd
+  where
+    n = declName d
+    td = jType jt
+    cd = jCodec jt
+    jt = jTypeDecl d m

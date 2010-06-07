@@ -1,26 +1,28 @@
 {-# LANGUAGE DeriveDataTypeable, StandaloneDeriving, FlexibleInstances #-}
 -- | Data types for defining the abstract syntax tree of an XDR file.
 module Data.XDR.AST
-    ( 
+    (
       -- * Constant expressions
       ConstExpr (..)
     , BinOp (..)
     , UnOp (..)
     , evalConstExpr
-    
+
       -- * XDR types
-    , Specification (..)
-    , Module (..)
+    , ConstDecl (..)
+    , ModuleSpec (..)
+    , ModuleName (..)
     , Definition (..)
-    , Typedef (..)
-    , ConstantDef (..)
-    , TypedefInternal (..)
-    , DeclInternal (..)
-    , EnumDetail (..)
-    , StructDetail (..)
-    , UnionDetail (..)
-    , Decl (..)
-    , Type (..)
+    , TypeDecl (..)
+    , EnumSpec (..)
+    , StructSpec (..)
+    , UnionSpec (..)
+    , UnionDis (..)
+    , UnionArm (..)
+    , SimpleSpec (..)
+    , TypeSpec (..)
+    , declName
+    , typeDecls
     ) where
 
 import Data.Bits
@@ -33,11 +35,12 @@ import System.Path
 --   generators to produce more tractable code.  Utility functions can
 --   evaluate these expressions.  A primary expression is just a reference to
 --   a literal, global constant or previously defined enum element.
-data ConstExpr = ConstLit Integer
-               | ConstRef ConstantDef
-               | ConstBinExpr BinOp ConstExpr ConstExpr
-               | ConstUnExpr UnOp ConstExpr
-               deriving (Show, Typeable, Data)
+
+data ConstExpr = LitExpr Integer
+               | NamedExpr ConstDecl
+               | BinExpr BinOp ConstExpr ConstExpr
+               | UnExpr UnOp ConstExpr
+                 deriving (Show, Typeable, Data)
 
 data BinOp = MUL | DIV | MOD | ADD | SUB | SHL | SHR | AND | XOR | OR
              deriving (Eq, Show, Typeable, Data)
@@ -45,81 +48,84 @@ data BinOp = MUL | DIV | MOD | ADD | SUB | SHL | SHR | AND | XOR | OR
 data UnOp = NEG | NOT
             deriving (Eq, Show, Typeable, Data)
 
-data DeclInternal = DeclSimple Type
-                  | DeclArray Type ConstExpr
-                  | DeclVarArray Type (Maybe ConstExpr)
-                  | DeclOpaque ConstExpr
-                  | DeclVarOpaque (Maybe ConstExpr)
-                  | DeclString (Maybe ConstExpr)
-                  | DeclPointer Type
-                    deriving (Show, Typeable, Data)
+data ConstDecl = ConstDecl String ConstExpr
+                 deriving (Show, Typeable, Data)
 
-data Decl = Decl String DeclInternal
-          | DeclVoid deriving (Show, Typeable, Data)
+data ModuleSpec = ModuleSpec {
+      moduleName :: ModuleName
 
-data Type = TInt
-          | TUInt
-          | THyper
-          | TUHyper
-          | TFloat
-          | TDouble
-          | TQuadruple
-          | TBool
-          | TEnum EnumDetail
-          | TStruct StructDetail
-          | TUnion UnionDetail
-          | TTypedef String
-            deriving (Show, Typeable, Data)
+    -- | A map of other xdr files that have been imported.  Empty if the
+    -- 'Data.XDR.Parser.Imports' language option was not enabled.
+    , moduleImports :: Map ModuleName ModuleSpec
 
-newtype EnumDetail = EnumDetail [ConstantDef]
+    -- | The data type definitions.
+    , moduleDefs :: [Definition]
+    } deriving Show
+
+-- | The module name as list of elements.
+newtype ModuleName = ModuleName [String]
+    deriving (Eq, Ord, Show, Typeable, Data)
+
+-- | A statement either introduces a new type, or defines a constant.  A
+-- typedef associates a name with a type.
+data Definition = TypeDef TypeDecl
+                | ConstDef ConstDecl
+                  deriving (Show, Typeable, Data)
+
+data TypeDecl = EnumDecl String EnumSpec
+              | StructDecl String StructSpec
+              | UnionDecl String UnionSpec
+              | SimpleDecl String SimpleSpec
+                deriving (Show, Typeable, Data)
+
+newtype EnumSpec = EnumSpec [ConstDecl]
     deriving (Show, Typeable, Data)
 
-newtype StructDetail = StructDetail [Decl]
+newtype StructSpec = StructSpec [TypeDecl]
     deriving (Show, Typeable, Data)
 
 -- | A union consists of a selector type, a set of cases and possibly
 -- a default case.
-data UnionDetail = UnionDetail Decl [(ConstExpr, Decl)] (Maybe Decl)
-                   deriving (Show, Typeable, Data)
+data UnionSpec = UnionSpec UnionDis [(ConstExpr, UnionArm)] (Maybe UnionArm)
+                 deriving (Show, Typeable, Data)
 
-data TypedefInternal = DefSimple DeclInternal
-                     | DefEnum EnumDetail
-                     | DefStruct StructDetail
-                     | DefUnion UnionDetail
-                       deriving (Show, Typeable, Data)
+-- | The type of discriminant is either "int", "unsigned int", or an
+-- enumerated type, such as "bool".
+data UnionDis = UnionDis String TypeSpec
+                deriving (Show, Typeable, Data)
 
--- | A typedef associates a name with a type.
-data Typedef = Typedef String TypedefInternal
-               deriving (Show, Typeable, Data)
+-- | The component types are called "arms" of the union, and are preceded by
+-- the value of the discriminant which implies their encoding.  Void is used
+-- when an arm does not contain any data.
+data UnionArm = DeclArm TypeDecl
+              | VoidArm
+                deriving (Show, Typeable, Data)
 
-data ConstantDef = ConstantDef String ConstExpr
-                   deriving (Show, Typeable, Data)
-
--- | A definition either introduces a new type, or defines a constant.
-data Definition = DefTypedef Typedef
-                | DefConstant ConstantDef
+data SimpleSpec = PlainSpec TypeSpec
+                | ArraySpec TypeSpec ConstExpr
+                | VarArraySpec TypeSpec (Maybe ConstExpr)
+                | OpaqueSpec ConstExpr
+                | VarOpaqueSpec (Maybe ConstExpr)
+                | StringSpec (Maybe ConstExpr)
+                | PointerSpec TypeSpec
                   deriving (Show, Typeable, Data)
 
--- | The module name as list of elements
-data Module = Module [String]
-            deriving (Show, Eq, Ord, Typeable, Data)
+data TypeSpec = IntSpec
+              | UIntSpec
+              | HyperSpec
+              | UHyperSpec
+              | FloatSpec
+              | DoubleSpec
+              | QuadrupleSpec
+              | BoolSpec
+              | NamedSpec String
+                deriving (Show, Typeable, Data)
 
-data Specification = Specification { 
-  moduleName :: Module
-
-  -- | A map of other xdr files that have been imported.  Empty if the
-  -- 'Data.XDR.Parser.Imports' language option was not enabled.
-  , imports :: Map Module Specification
-  
-  -- | The data type definitions
-  , defs :: [Definition]
-  } deriving (Show)
-
--- | Evaluates a constant expression
+-- | Evaluates a constant expression.
 evalConstExpr :: ConstExpr -> Integer
-evalConstExpr (ConstLit n) = n
-evalConstExpr (ConstRef (ConstantDef _ e)) = evalConstExpr e
-evalConstExpr (ConstBinExpr o c1 c2) = evalOp . fromJust . flip lookup ops $ o
+evalConstExpr (LitExpr n) = n
+evalConstExpr (NamedExpr (ConstDecl _ e)) = evalConstExpr e
+evalConstExpr (BinExpr o c1 c2) = evalOp . fromJust . flip lookup ops $ o
   where
     evalOp op = op (evalConstExpr c1) (evalConstExpr c2)
     ops = [ (MUL, (*))
@@ -133,5 +139,19 @@ evalConstExpr (ConstBinExpr o c1 c2) = evalOp . fromJust . flip lookup ops $ o
           , (XOR, xor)
           , (OR, (.|.))
           ]
-evalConstExpr (ConstUnExpr NEG c) = negate . evalConstExpr $ c
-evalConstExpr (ConstUnExpr NOT c) = complement . evalConstExpr $ c
+evalConstExpr (UnExpr NEG c) = negate . evalConstExpr $ c
+evalConstExpr (UnExpr NOT c) = complement . evalConstExpr $ c
+
+-- | Extract name from declaration.
+declName :: TypeDecl -> String
+declName (EnumDecl n _) = n
+declName (StructDecl n _) = n
+declName (UnionDecl n _) = n
+declName (SimpleDecl n _) = n
+
+typeDecls :: [Definition] -> [TypeDecl]
+typeDecls =
+    foldr f []
+  where
+    f (TypeDef td) tds = td : tds
+    f _ tds = tds

@@ -6,6 +6,7 @@ import System.Path
 import Text.PrettyPrint.Leijen as PP hiding (braces, indent)
 
 import Data.XDR.AST
+import Data.XDR.PPUtils
 
 ----------------------------------------------------------------
 
@@ -21,73 +22,81 @@ braces ds = nest indent (lbrace <$> vcat ds) <$> rbrace
 
 -- | Pretty print an AST back to XDR format.  FIXME: The first
 --   argument is ignored and will be disappearing soon.
-ppXDR :: Specification -> String
+ppXDR :: ModuleSpec -> String
 ppXDR = show . ppSpec
 
 -- | FIXME: print the imports
-ppSpec :: Specification -> Doc
-ppSpec (Specification _ _ defs) = vcat . punctuate linebreak . map ppDef $ defs
+ppSpec :: ModuleSpec -> Doc
+ppSpec (ModuleSpec _ _ ds) = vcat . punctuate linebreak . map ppDef $ ds
 
 ppDef :: Definition -> Doc
-ppDef (DefTypedef td) = ppTypedef td
-ppDef (DefConstant cd) = ppConstantDef cd
+ppDef (TypeDef td) = text "typedef" <+> ppTypeDecl td <> semi
+ppDef (ConstDef cd) = ppConstDecl cd
 
-ppTypedef :: Typedef -> Doc
-ppTypedef (Typedef n ti) = text "typedef" <+> ppTypedefInternal n ti <> semi
+ppTypeDecl :: TypeDecl -> Doc
+ppTypeDecl (EnumDecl n s) = text "enum" <+> ppEnumSpec s <+> text n
+ppTypeDecl (StructDecl n s) = text "struct" <+> ppStructSpec s <+> text n
+ppTypeDecl (UnionDecl n s) = text "union" <+> ppUnionSpec s <+> text n
+ppTypeDecl (SimpleDecl n s) = ppSimpleSpec n s
 
-ppTypedefInternal :: String -> TypedefInternal -> Doc
-ppTypedefInternal n (DefSimple di) = ppDecl (Decl n di)
-ppTypedefInternal n (DefEnum ed) = text "enum" <+> ppEnumDetail ed <+> text n
-ppTypedefInternal n (DefStruct sd) = text "struct" <+> ppStructDetail sd <+> text n
-ppTypedefInternal n (DefUnion ud) = text "union" <+> ppUnionDetail ud <+> text n
+ppConstDecl :: ConstDecl -> Doc
+ppConstDecl (ConstDecl n c) = text "const" <+> text n <+> text "=" <+> ppConstExpr c <> semi
 
-ppEnumDetail :: EnumDetail -> Doc
-ppEnumDetail (EnumDetail xs) = braces . punctuate comma . map ppEnumDef $ xs
+ppEnumSpec :: EnumSpec -> Doc
+ppEnumSpec (EnumSpec cs) = braces . punctuate comma . map ppEnumConstDecl $ cs
 
-ppEnumDef :: ConstantDef -> Doc
-ppEnumDef (ConstantDef n c) = text n <+> text "=" <+> ppConstant c
+ppEnumConstDecl :: ConstDecl -> Doc
+ppEnumConstDecl (ConstDecl n c) = text n <+> text "=" <+> ppConstExpr c
 
-ppStructDetail :: StructDetail -> Doc
-ppStructDetail (StructDetail decls) = braces . map ((<> semi) . ppDecl) $ decls
+ppStructSpec :: StructSpec -> Doc
+ppStructSpec (StructSpec ds) = braces . map ((<> semi) . ppTypeDecl) $ ds
 
-ppUnionDetail :: UnionDetail -> Doc
-ppUnionDetail (UnionDetail selector cases mDefault) =
-    vcat $ concat [ [ text "switch" <> parens (ppDecl selector) <+> lbrace ]
-                  , map ppCase cases
-                  , [ppDflt mDefault]
+ppUnionSpec :: UnionSpec -> Doc
+ppUnionSpec (UnionSpec (UnionDis n t) cs md) =
+    vcat $ concat [ [ text "switch" <> parens (ppTypeSpec t <+> text n) <+> lbrace ]
+                  , map ppUnionCase cs
+                  , [ppUnionDflt md]
                   , [rbrace]
                   ]
 
-ppCase (c, d) = nest indent (ppConstant c <> colon <$> ppDecl d <> semi)
-ppDflt d = ppOptional (\d -> nest indent (text "default:" <$> ppDecl d)) d
+ppUnionCase :: (ConstExpr, UnionArm) -> Doc
+ppUnionCase (c, d) = nest indent (text "case" <+> ppConstExpr c <> colon <$> ppUnionArm d <> semi)
 
-ppConstantDef (ConstantDef n c) = text "const" <+> text n <+> text "=" <+> ppConstant c <> semi
+ppUnionDflt :: Maybe UnionArm -> Doc
+ppUnionDflt d = ppOptional (\d -> nest indent (text "default:" <$> ppUnionArm d <> semi)) d
 
-ppConstant c = text . show . evalConstExpr $ c
+ppUnionArm :: UnionArm -> Doc
+ppUnionArm (DeclArm d) = ppTypeDecl d
+ppUnionArm VoidArm = text "void"
 
-ppDecl (Decl n (DeclSimple t)) = ppType t <+> text n
-ppDecl (Decl n (DeclArray t c)) = ppType t <+> text n <> (brackets . ppConstant $ c)
-ppDecl (Decl n (DeclVarArray t mc)) = ppType t <+> text n <+> ppVarSize mc
-ppDecl (Decl n (DeclOpaque c)) = text "opaque" <+> text n <> (brackets . ppConstant $ c)
-ppDecl (Decl n (DeclVarOpaque mc)) = text "opaque" <+> text n <> ppVarSize mc
-ppDecl (Decl n (DeclString mc)) = text "string" <+> text n <> ppVarSize mc
-ppDecl (Decl n (DeclPointer t)) = ppType t <> text "*" <+> text n
-ppDecl DeclVoid = text "void"
+ppSimpleSpec :: String -> SimpleSpec -> Doc
+ppSimpleSpec n (PlainSpec t) =
+    ppTypeSpec t <+> text n
+ppSimpleSpec n (ArraySpec t c) =
+    ppTypeSpec t <+> text n <> (brackets . ppConstExpr $ c)
+ppSimpleSpec n (VarArraySpec t mc) =
+    ppTypeSpec t <+> text n <+> ppVarSize mc
+ppSimpleSpec n (OpaqueSpec c) =
+    text "opaque" <+> text n <> (brackets . ppConstExpr $ c)
+ppSimpleSpec n (VarOpaqueSpec mc) =
+    text "opaque" <+> text n <> ppVarSize mc
+ppSimpleSpec n (StringSpec mc) =
+    text "string" <+> text n <> ppVarSize mc
+ppSimpleSpec n (PointerSpec t) =
+    ppTypeSpec t <> text "*" <+> text n
 
 ppVarSize :: Maybe ConstExpr -> Doc
-ppVarSize = angles . ppOptional ppConstant
+ppVarSize = angles . ppOptional ppConstExpr
 
-ppType TInt = text "int"
-ppType TUInt = text "unsigned int"
-ppType THyper = text "hyper"
-ppType TUHyper = text "unsigned hyper"
-ppType TFloat = text "float"
-ppType TDouble = text "double"
-ppType TQuadruple = text "quadruple"
-ppType TBool = text "bool"
-ppType (TEnum ed) = text "enum" <+> ppEnumDetail ed
-ppType (TStruct sd) = text "struct" <+> ppStructDetail sd
-ppType (TUnion ud) = text "union" <+> ppUnionDetail ud
-ppType (TTypedef n) = text n
+ppTypeSpec :: TypeSpec -> Doc
+ppTypeSpec IntSpec = text "int"
+ppTypeSpec UIntSpec = text "unsigned int"
+ppTypeSpec HyperSpec = text "hyper"
+ppTypeSpec UHyperSpec = text "unsigned hyper"
+ppTypeSpec FloatSpec = text "float"
+ppTypeSpec DoubleSpec = text "double"
+ppTypeSpec QuadrupleSpec = text "quadruple"
+ppTypeSpec BoolSpec = text "bool"
+ppTypeSpec (NamedSpec n) = text n
 
 ----------------------------------------------------------------

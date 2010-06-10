@@ -236,7 +236,7 @@ ppRpcHeader spec =
 
     ppStructSpec :: StructSpec -> Doc
     ppStructSpec (StructSpec ds) =
-        braces . vcat . punctuate semi . map ppTypeDecl $ ds
+        braces . vcat . map ((<> semi) . ppTypeDecl) $ ds
 
     ppUnionSpec :: UnionSpec -> Doc
     ppUnionSpec (UnionSpec (UnionDis n t) cs md) =

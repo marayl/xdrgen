@@ -70,7 +70,7 @@ processFile flags cwd file = parseFile options file
 
 runFormatter :: Formatter -> Either [ParseError] ModuleSpec -> IO ()
 runFormatter _ (Left errs)  = die (unlines . map show $ errs)
-runFormatter f (Right spec) = putStrLn . f $ spec
+runFormatter f (Right spec) = putStrLn . f . promoteAnons $ spec
 
 main :: IO ()
 main = do

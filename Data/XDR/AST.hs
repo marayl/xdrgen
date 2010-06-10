@@ -23,10 +23,13 @@ module Data.XDR.AST
     , TypeSpec (..)
     , declName
     , typeDecls
+    , promoteAnons
     ) where
 
+import Control.Monad.State
 import Data.Bits
 import Data.Generics
+import Data.List
 import Data.Map (Map)
 import Data.Maybe
 import System.Path
@@ -155,3 +158,109 @@ typeDecls =
   where
     f (TypeDef td) tds = td : tds
     f _ tds = tds
+
+-- | State holding anonymous names for consumption, and resulting anonymous
+-- types for promotion.
+
+type AnonState a = State ([String], [TypeDecl]) a
+
+-- | Given a struct or union element name, and an anonymous type constructor,
+-- add anonymous type to state and return a typedef to it.
+
+promoteAnon :: String -> (String -> TypeDecl) -> AnonState TypeDecl
+promoteAnon n f = do
+    (x:xs, ds) <- get
+    put (xs, (f x):ds)
+    return (SimpleDecl n (PlainSpec (NamedSpec x)))
+
+promoteEnum :: String -> EnumSpec -> AnonState TypeDecl
+promoteEnum n =
+    promoteAnon n . flip EnumDecl
+
+promoteStruct :: String -> StructSpec -> AnonState TypeDecl
+promoteStruct n =
+    promoteAnon n . flip StructDecl
+
+promoteUnion :: String -> UnionSpec -> AnonState TypeDecl
+promoteUnion n =
+    promoteAnon n . flip UnionDecl
+
+-- | Flush all anonymous type declarations from state monad.
+
+flushAnons :: AnonState [TypeDecl]
+flushAnons = do
+    (xs, ds) <- get
+    put (xs, [])
+    return ds
+
+-- | Promote all anonymous types to top-level definitions.
+
+promoteAnons :: ModuleSpec -> ModuleSpec
+promoteAnons (ModuleSpec n is ds) =
+    ModuleSpec n is ds'
+  where
+    ds' = concat . evalState (mapM promoteDef ds)
+          $ (map ((anonPrefix n ++) . show) [1..], [])
+
+-- | Descend into typedef and promote all anonymous types into top-level
+-- definitions.
+
+promoteDef :: Definition -> AnonState [Definition]
+promoteDef (TypeDef td) = do
+    d <- topDecl td
+    ds <- flushAnons
+    return . map TypeDef . reverse $ (d : ds)
+promoteDef d@(ConstDef _) = do
+    return [d]
+
+-- | The prefix assigned to top-level anonymous types.
+
+anonPrefix :: ModuleName -> String
+anonPrefix (ModuleName xs) =
+    (concat . intersperse "_" $ xs) ++ "_anon"
+
+-- | Descend into top-level type declarations.
+
+topDecl :: TypeDecl -> AnonState TypeDecl
+topDecl d@(EnumDecl _ _) = do
+    return d
+topDecl (StructDecl n (StructSpec ds)) = do
+    ds' <- mapM memDecl ds
+    return (StructDecl n (StructSpec ds'))
+topDecl (UnionDecl n (UnionSpec ud cs md)) = do
+    cs' <- mapM unionCase cs
+    md' <- unionDflt md
+    return (UnionDecl n (UnionSpec ud cs' md'))
+topDecl d@(SimpleDecl _ _) = do
+    return d
+
+-- | Put each member with an anonymous type into the state monad, and replace
+-- anonymous type with a typedef to the new top-level type.
+
+memDecl :: TypeDecl -> AnonState TypeDecl
+memDecl (EnumDecl n s) =
+    promoteEnum n s
+memDecl (StructDecl n (StructSpec ds)) = do
+    ds' <- mapM memDecl ds
+    promoteStruct n (StructSpec ds')
+memDecl (UnionDecl n (UnionSpec ud cs md)) = do
+    cs' <- mapM unionCase cs
+    md' <- unionDflt md
+    promoteUnion n (UnionSpec ud cs' md')
+memDecl d@(SimpleDecl _ _) = do
+    return d
+
+unionCase :: (ConstExpr, UnionArm) -> AnonState (ConstExpr, UnionArm)
+unionCase (c, d) =
+    ((,) c) `fmap` unionArm d
+
+unionDflt :: Maybe UnionArm -> AnonState (Maybe UnionArm)
+unionDflt =
+    maybe (return Nothing) (fmap Just . unionArm)
+
+unionArm :: UnionArm -> AnonState UnionArm
+unionArm (DeclArm d) = do
+    d' <- memDecl d
+    return . DeclArm $ d'
+unionArm VoidArm = do
+    return VoidArm

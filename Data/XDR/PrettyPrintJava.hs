@@ -43,6 +43,7 @@ camelCase (x:xs) = x : camelCase xs
 
 typeName :: String -> String
 typeName [] = []
+typeName ('_':x:xs) = '_' : toUpper x : camelCase xs
 typeName (x:xs) = toUpper x : camelCase xs
 
 topName :: ModuleName -> String

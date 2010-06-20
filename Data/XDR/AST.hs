@@ -43,7 +43,7 @@ data ConstExpr = LitExpr Integer
                | NamedExpr ConstDecl
                | BinExpr BinOp ConstExpr ConstExpr
                | UnExpr UnOp ConstExpr
-                 deriving (Show, Typeable, Data)
+                 deriving (Eq, Show, Typeable, Data)
 
 data BinOp = MUL | DIV | MOD | ADD | SUB | SHL | SHR | AND | XOR | OR
              deriving (Eq, Show, Typeable, Data)
@@ -52,7 +52,7 @@ data UnOp = NEG | NOT
             deriving (Eq, Show, Typeable, Data)
 
 data ConstDecl = ConstDecl String ConstExpr
-                 deriving (Show, Typeable, Data)
+                 deriving (Eq, Show, Typeable, Data)
 
 data ModuleSpec = ModuleSpec {
       moduleName :: ModuleName
@@ -73,36 +73,36 @@ newtype ModuleName = ModuleName [String]
 -- typedef associates a name with a type.
 data Definition = TypeDef TypeDecl
                 | ConstDef ConstDecl
-                  deriving (Show, Typeable, Data)
+                  deriving (Eq, Show, Typeable, Data)
 
 data TypeDecl = EnumDecl String EnumSpec
               | StructDecl String StructSpec
               | UnionDecl String UnionSpec
               | SimpleDecl String SimpleSpec
-                deriving (Show, Typeable, Data)
+                deriving (Eq, Show, Typeable, Data)
 
 newtype EnumSpec = EnumSpec [ConstDecl]
-    deriving (Show, Typeable, Data)
+    deriving (Eq, Show, Typeable, Data)
 
 newtype StructSpec = StructSpec [TypeDecl]
-    deriving (Show, Typeable, Data)
+    deriving (Eq, Show, Typeable, Data)
 
 -- | A union consists of a selector type, a set of cases and possibly
 -- a default case.
 data UnionSpec = UnionSpec UnionDis [(ConstExpr, UnionArm)] (Maybe UnionArm)
-                 deriving (Show, Typeable, Data)
+                 deriving (Eq, Show, Typeable, Data)
 
 -- | The type of discriminant is either "int", "unsigned int", or an
 -- enumerated type, such as "bool".
 data UnionDis = UnionDis String TypeSpec
-                deriving (Show, Typeable, Data)
+                deriving (Eq, Show, Typeable, Data)
 
 -- | The component types are called "arms" of the union, and are preceded by
 -- the value of the discriminant which implies their encoding.  Void is used
 -- when an arm does not contain any data.
 data UnionArm = DeclArm TypeDecl
               | VoidArm
-                deriving (Show, Typeable, Data)
+                deriving (Eq, Show, Typeable, Data)
 
 data SimpleSpec = PlainSpec TypeSpec
                 | ArraySpec TypeSpec ConstExpr
@@ -111,7 +111,7 @@ data SimpleSpec = PlainSpec TypeSpec
                 | VarOpaqueSpec (Maybe ConstExpr)
                 | StringSpec (Maybe ConstExpr)
                 | PointerSpec TypeSpec
-                  deriving (Show, Typeable, Data)
+                  deriving (Eq, Show, Typeable, Data)
 
 data TypeSpec = IntSpec
               | UIntSpec
@@ -122,7 +122,7 @@ data TypeSpec = IntSpec
               | QuadrupleSpec
               | BoolSpec
               | NamedSpec String
-                deriving (Show, Typeable, Data)
+                deriving (Eq, Show, Typeable, Data)
 
 -- | Evaluates a constant expression.
 evalConstExpr :: ConstExpr -> Integer

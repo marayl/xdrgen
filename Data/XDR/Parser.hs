@@ -1,5 +1,6 @@
 module Data.XDR.Parser
     ( LanguageOptions (..)
+    , parseConstExpr
     , parseString
     , parseFile
     , ParseError
@@ -150,6 +151,12 @@ newtype ParseError = ParseError String
 
 instance Show ParseError where
     show (ParseError str) = str
+
+parseConstExpr :: ByteString -> String -> Either [ParseError] ConstExpr
+parseConstExpr txt source =
+  case runParser constExpr (initContext []) source txt of
+    Left err -> Left [ParseError . show $ err]
+    Right spec -> Right spec
 
 -- | Parse a string.  The Imports language extension is not available
 --   via this parser since it doesn't run in the IO Monad (fix this).

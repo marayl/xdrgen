@@ -9,10 +9,21 @@ Category:       Data
 Synopsis:       XDR utilities
 Build-Type:     Simple
 
+Flag test
+  description: Build test suite
+  default: False
+
 Executable xdrgen
   Build-Depends: base >= 4.0, parsec >= 3, syb, containers, directory, filepath, wl-pprint, typehash, pureMD5, bytestring, pathtype, mtl
   Main-Is: Main.hs
 
+Executable xdrtest
+  If flag(test)
+    Build-Depends: base >= 4.0, parsec >= 3, syb, containers, directory, filepath, wl-pprint, typehash, pureMD5, bytestring, pathtype, mtl, HUnit, utf8-string
+  Else
+    Buildable: False
+  Main-Is: Test.hs
+
 Library
-  Build-Depends:     base >= 4.0, parsec >= 3, syb, containers, directory, filepath, wl-pprint, typehash, pureMD5, bytestring, pathtype, mtl
+  Build-Depends: base >= 4.0, parsec >= 3, syb, containers, directory, filepath, wl-pprint, typehash, pureMD5, bytestring, pathtype, mtl
   Exposed-modules:   Data.XDR

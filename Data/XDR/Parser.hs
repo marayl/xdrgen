@@ -289,7 +289,7 @@ enumSpec :: (Monad m) => Parser m EnumSpec
 enumSpec =
     EnumSpec <$> (setNextEnum 0 *> braces body)
   where
-    body = commaSep pair
+    body = commaSep1 pair
     pair = do
       n <- identifier
       mc <- optionMaybe (reservedOp "=" *> constExpr)
